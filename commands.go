@@ -4,9 +4,11 @@ import (
 	"fmt"
 
 	"github.com/Y716/gatorcli/gatorcli/internal/config"
+	"github.com/Y716/gatorcli/gatorcli/internal/database"
 )
 
 type state struct {
+	db     *database.Queries
 	config *config.Config
 }
 
@@ -16,32 +18,18 @@ type command struct {
 }
 
 type commands struct {
-	all_commands map[string]func(*state, command) error
-}
-
-func handlerLogin(s *state, cmd command) error {
-	if len(cmd.args) == 0 {
-		return fmt.Errorf("Expect an argument <username>")
-	}
-
-	username := cmd.args[0]
-	err := s.config.SetUser(username)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("The username has been set to: %s\n", username)
-	return nil
+	handlers map[string]func(*state, command) error
 }
 
 func (c *commands) run(s *state, cmd command) error {
-	err := c.all_commands[cmd.name](s, cmd)
-	if err != nil {
-		return err
+	handler, ok := c.handlers[cmd.name]
+	if !ok {
+		return fmt.Errorf("unknown command: %s\n", cmd.name)
 	}
-	return nil
+
+	return handler(s, cmd)
 }
 
 func (c *commands) register(name string, f func(*state, command) error) {
-	c.all_commands[name] = f
+	c.handlers[name] = f
 }
