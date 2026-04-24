@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -10,19 +11,50 @@ import (
 )
 
 func handlerAgg(s *state, cmd command) error {
+	if len(cmd.args) < 1 {
+		return fmt.Errorf("expect an argument <duration>\n")
+	}
+	time_between_reqs, err := time.ParseDuration(cmd.args[0])
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Collecting feeds every %v\n", time_between_reqs)
+
+	ticker := time.NewTicker(time_between_reqs)
+	for ; ; <-ticker.C {
+		scrapeFeeds(s)
+	}
+}
+
+func scrapeFeeds(s *state) error {
 	ctx := context.Background()
 
-	feed, err := fetchFeed(ctx, "https://www.wagslane.dev/index.xml")
+	feedData, err := s.db.GetNextFeedToFetch(ctx)
 	if err != nil {
 		return err
 	}
 
-	fmt.Println(feed)
+	params := database.MarkFeedFetchedParams{
+		LastFetchedAt: sql.NullTime{Time: time.Now(), Valid: true},
+		UpdatedAt:     time.Now(),
+		ID:            feedData.ID,
+	}
+	s.db.MarkFeedFetched(ctx, params)
+
+	feedPosts, err := fetchFeed(ctx, feedData.Url)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Posts from %s\n", feedData.Name)
+	for i, post := range feedPosts.Channel.Item {
+		fmt.Printf("%d. %s\n", i+1, post.Title)
+	}
+	fmt.Println()
 
 	return nil
 }
 
-func handlerAddFeed(s *state, cmd command) error {
+func handlerAddFeed(s *state, cmd command, user database.User) error {
 	if len(cmd.args) < 2 {
 		return fmt.Errorf("expect an argument <name> <url>\n")
 	}
@@ -30,11 +62,7 @@ func handlerAddFeed(s *state, cmd command) error {
 	url := cmd.args[1]
 
 	ctx := context.Background()
-	db, err := s.db.GetUser(ctx, s.config.CurrentUserName)
-	if err != nil {
-		return err
-	}
-	user_id := db.ID
+	user_id := user.ID
 
 	params := database.CreateFeedParams{
 		ID:        uuid.New(),
@@ -104,18 +132,14 @@ func handlerListFeeds(s *state, cmd command) error {
 	return nil
 }
 
-func handlerFollow(s *state, cmd command) error {
+func handlerFollow(s *state, cmd command, user database.User) error {
 	if len(cmd.args) == 0 {
 		return fmt.Errorf("expect an argument <url>\n")
 	}
 	url := cmd.args[0]
 	ctx := context.Background()
 
-	user_db, err := s.db.GetUser(ctx, s.config.CurrentUserName)
-	if err != nil {
-		return err
-	}
-	user_id := user_db.ID
+	user_id := user.ID
 
 	feed_db, err := s.db.GetFeedByUrl(ctx, url)
 	if err != nil {
@@ -140,10 +164,10 @@ func handlerFollow(s *state, cmd command) error {
 	return nil
 }
 
-func handlerFollowing(s *state, cmd command) error {
+func handlerFollowing(s *state, cmd command, user database.User) error {
 	ctx := context.Background()
 
-	ff_db, err := s.db.GetFeedFollowsForUser(ctx, s.config.CurrentUserName)
+	ff_db, err := s.db.GetFeedFollowsForUser(ctx, user.ID)
 	if err != nil {
 		return err
 	}
@@ -154,5 +178,26 @@ func handlerFollowing(s *state, cmd command) error {
 		fmt.Printf("%d. %s\n", i+1, feedName)
 	}
 
+	return nil
+}
+
+func handlerUnfollow(s *state, cmd command, user database.User) error {
+	if len(cmd.args) == 0 {
+		return fmt.Errorf("expect an argument <url>\n")
+	}
+	url := cmd.args[0]
+	ctx := context.Background()
+	feed_db, err := s.db.GetFeedByUrl(ctx, url)
+	if err != nil {
+		return err
+	}
+
+	params := database.DeleteFollowingParams{
+		UserID: user.ID,
+		FeedID: feed_db.ID,
+	}
+
+	s.db.DeleteFollowing(ctx, params)
+	fmt.Printf("%s has unfollowed %s\n", s.config.CurrentUserName, feed_db.Name)
 	return nil
 }
