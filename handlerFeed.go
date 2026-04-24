@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Y716/gatorcli/gatorcli/internal/database"
@@ -21,9 +24,14 @@ func handlerAgg(s *state, cmd command) error {
 	fmt.Printf("Collecting feeds every %v\n", time_between_reqs)
 
 	ticker := time.NewTicker(time_between_reqs)
+
 	for ; ; <-ticker.C {
-		scrapeFeeds(s)
+		err = scrapeFeeds(s)
+		if err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func scrapeFeeds(s *state) error {
@@ -45,11 +53,41 @@ func scrapeFeeds(s *state) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Posts from %s\n", feedData.Name)
+	fmt.Printf("Scraping from '%s':\n", feedData.Name)
 	for i, post := range feedPosts.Channel.Item {
-		fmt.Printf("%d. %s\n", i+1, post.Title)
+
+		publishedAt := sql.NullTime{}
+		format := []string{time.RFC1123Z, time.RFC1123, time.RFC3339}
+		for _, v := range format {
+			if parsed, err := time.Parse(v, post.PubDate); err == nil {
+				publishedAt = sql.NullTime{Time: parsed, Valid: true}
+				break
+			}
+		}
+
+		postParams := database.CreatePostParams{
+			ID:          uuid.New(),
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+			Title:       post.Title,
+			Description: post.Description,
+			Url:         post.Link,
+			PublishedAt: publishedAt,
+			FeedID:      feedData.ID,
+		}
+
+		postDB, err := s.db.CreatePost(ctx, postParams)
+		if err != nil {
+			if strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
+				continue
+			}
+			log.Printf("Couldn't create post: %v", err)
+			continue
+		}
+
+		fmt.Printf("%d. %s\n", i+1, postDB.Title)
+
 	}
-	fmt.Println()
 
 	return nil
 }
@@ -199,5 +237,29 @@ func handlerUnfollow(s *state, cmd command, user database.User) error {
 
 	s.db.DeleteFollowing(ctx, params)
 	fmt.Printf("%s has unfollowed %s\n", s.config.CurrentUserName, feed_db.Name)
+	return nil
+}
+
+func handlerBrowse(s *state, cmd command, user database.User) error {
+	limit := "2"
+	if len(cmd.args) == 1 {
+		limit = cmd.args[0]
+	}
+	ctx := context.Background()
+	intlimit, _ := strconv.Atoi(limit)
+	params := database.GetPostForUserParams{
+		UserID: user.ID,
+		Limit:  int32(intlimit),
+	}
+	posts, err := s.db.GetPostForUser(ctx, params)
+	if err != nil {
+		return err
+	}
+
+	for _, post := range posts {
+		fmt.Printf("Title: %s\n", post.Title)
+		fmt.Printf("%s\n\n", post.Description)
+	}
+
 	return nil
 }
